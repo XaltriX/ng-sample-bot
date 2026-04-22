@@ -1,0 +1,33 @@
+{
+  "name": "Telegram Sample Video Bot",
+  "description": "Generates watermarked sample clips from videos sent to a Telegram bot.",
+  "keywords": ["telegram", "bot", "ffmpeg", "python", "pyrogram"],
+  "buildpacks": [
+    {
+      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID from my.telegram.org",
+      "value": "24955235"
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash from my.telegram.org",
+      "value": "f317b3f7bbe390346d8b46868cff0de8"
+    },
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather",
+      "value": "8746844152:AAF1cfkvhzWGdvU_t_2mCSMbrXzzab6lH3k"
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}
