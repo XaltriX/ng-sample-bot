@@ -21,9 +21,9 @@ MONGO_URI: str = os.getenv("MONGO_URI", "mongodb+srv://villainravangaming:mikey_
 MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "post_bot")
 
 # ── File-store bot (2nd bot: users get the sample here) ───────────────────────
-FILESTORE_BOT_TOKEN: str = os.getenv("FILESTORE_BOT_TOKEN", "PUT_FILESTORE_BOT_TOKEN_HERE")
+FILESTORE_BOT_TOKEN: str = os.getenv("FILESTORE_BOT_TOKEN", "7551012261:AAH6x7BxIPORbvBc0VjDGjeQQR8hKO46p5A")
 # Private channel where the file-store bot is ADMIN. Samples are stored here.
-DB_CHANNEL_ID: int = int(os.getenv("DB_CHANNEL_ID", "0"))   # e.g. -1001234567890
+DB_CHANNEL_ID: int = int(os.getenv("DB_CHANNEL_ID", "-1003977773269"))   # e.g. -1001234567890
 
 # ── Sample settings ───────────────────────────────────────────────────────────
 SAMPLE_TTL_SECONDS: int = int(os.getenv("SAMPLE_TTL_SECONDS", "300"))  # auto-delete after 5 min
