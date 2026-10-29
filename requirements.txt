@@ -3,3 +3,4 @@ TgCrypto
 motor==3.7.1
 pymongo==4.19.0
 Pillow>=10.1
+aiohttp

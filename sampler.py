@@ -3,6 +3,7 @@ Sample pipeline: download full video → cut watermarked clip (ffmpeg) →
 upload to the private DB channel via the file-store bot → save in Mongo.
 """
 import asyncio
+import html
 import json
 import logging
 import math
@@ -11,6 +12,7 @@ import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from pyrogram import enums
 
 import database as db
 from config import DB_CHANNEL_ID, SAMPLE_WORKERS, WATERMARK_TEXT
@@ -41,7 +43,7 @@ async def probe(path: Path) -> tuple[float, int, int]:
     data = json.loads(out)
     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
     if not video:
-        raise RuntimeError("Is file me video stream nahi mili.")
+        raise RuntimeError("No video stream found in this file.")
     return float(data["format"]["duration"]), int(video["width"]), int(video["height"])
 
 
@@ -79,8 +81,8 @@ def make_watermark(text: str, video_w: int, out_path: Path) -> None:
     img.save(out_path, "PNG")
 
 
-async def make_sample(src: Path, dst: Path, progress=None) -> tuple[int, int, int]:
-    """Cut + watermark. Returns (sample_seconds, width, height)."""
+async def make_sample(src: Path, dst: Path, progress=None) -> tuple[int, int, int, float]:
+    """Cut + watermark. Returns (sample_seconds, width, height, full_duration)."""
     total, w, h = await probe(src)
     length = sample_length(total)
     length = min(length, max(1, int(total)))
@@ -124,7 +126,7 @@ async def make_sample(src: Path, dst: Path, progress=None) -> tuple[int, int, in
         wm.unlink(missing_ok=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {err.decode()[-300:]}")
-    return length, int(w // 2 * 2), int(h // 2 * 2)
+    return length, int(w // 2 * 2), int(h // 2 * 2), total
 
 
 # ── Progress bar in the status message ────────────────────────────────────────
@@ -166,7 +168,7 @@ async def enqueue(client, message, status):
     n = _queue.qsize()
     if n > 1:
         try:
-            await status.edit(f"⏳ Queue me #{n}. Wait karo…")
+            await status.edit(f"⏳ You are #{n} in the queue. Please wait…")
         except Exception:
             pass
 
@@ -179,7 +181,7 @@ async def _worker(i: int):
         except Exception as e:
             log.exception("sample job failed")
             try:
-                await status.edit(f"❌ Sample fail ho gaya.\n\n`{str(e)[:300]}`")
+                await status.edit(f"❌ Sample failed.\n\n`{str(e)[:300]}`")
             except Exception:
                 pass
         finally:
@@ -193,24 +195,27 @@ async def _process(client, message, status):
     try:
         await prog.show("📥 Downloading…", 0, force=True)
         await client.download_media(message, file_name=str(src), progress=prog.cb("📥 Downloading…"))
+        size_bytes = src.stat().st_size  # exact size of the full video
 
-        await prog.show("🎞 Sample ban raha hai…", 0, force=True)
-        length, w, h = await make_sample(src, dst, lambda p: prog.show("🎞 Sample ban raha hai…", p))
+        await prog.show("🎞 Creating sample…", 0, force=True)
+        length, w, h, total = await make_sample(src, dst, lambda p: prog.show("🎞 Creating sample…", p))
 
         await prog.show("📤 Uploading…", 0, force=True)
         sent = await _fs.send_video(
             chat_id=DB_CHANNEL_ID,
             video=str(dst),
-            caption=f"🎬 **Sample Preview**\n\n{WATERMARK_TEXT}",
+            caption=f"🎬 <b>Sample Preview</b>\n\n<blockquote>{html.escape(WATERMARK_TEXT)}</blockquote>",
+            parse_mode=enums.ParseMode.HTML,
             duration=length, width=w, height=h, supports_streaming=True,
             progress=prog.cb("📤 Uploading…"),
         )
 
         # status message becomes the "reply to me with the link" prompt
-        await db.create_sample(key, message.from_user.id, sent.id, status.id)
+        await db.create_sample(key, message.from_user.id, sent.id, status.id, total, size_bytes)
         await status.edit(
             f"✅ **Sample ready** (`{key}`)\n\n"
-            "📥 Is message par **reply** karke **Download link** bhejo."
+            "📥 Now send the **download link**.\n"
+            "__(If you sent several videos at once, reply to this message.)__"
         )
     finally:
         src.unlink(missing_ok=True)

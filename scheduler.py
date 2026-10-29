@@ -28,6 +28,7 @@ async def scheduler_loop(app: Client):
                 if not post:
                     break
 
+                title = post.get("title") or "scheduled post"
                 try:
                     # "all" mode → resolve channels LIVE at send time
                     if post.get("channels_mode") == "all":
@@ -35,23 +36,24 @@ async def scheduler_loop(app: Client):
                     else:
                         channel_ids = post.get("channels", [])
 
-                    sent, failed = await helpers.send_post_to_channels(
+                    title, sent, failed = await helpers.publish(
                         app=app,
-                        title=post["title"],
                         main_link=post["main_link"],
                         preview=post.get("preview"),
+                        duration=post.get("duration"),
+                        size_bytes=post.get("size_bytes"),
                         channel_ids=channel_ids,
                     )
                 except Exception as e:
-                    sent, failed, channel_ids = 0, [(0, str(e))], []
+                    sent, failed = 0, [(0, str(e))]
 
-                await db.finish_post(post["_id"], "sent" if sent else "failed", sent, len(failed))
-                print(f"[SCHEDULER] {post['title']}: sent={sent} failed={len(failed)}")
+                await db.finish_post(post["_id"], "sent" if sent else "failed", sent, len(failed), title if sent else None)
+                print(f"[SCHEDULER] {title}: sent={sent} failed={len(failed)}")
 
                 if failed or not sent:
-                    lines = "\n".join(f"• {cid} — {err[:80]}" for cid, err in failed) or "• koi channel nahi mila"
+                    lines = "\n".join(f"• {cid} — {err[:80]}" for cid, err in failed) or "• no channels found"
                     await _notify_admins(
-                        app, f"⚠️ Scheduled **{post['title']}**: {sent} sent, {len(failed)} failed.\n{lines}"
+                        app, f"⚠️ Scheduled **{title}**: {sent} sent, {len(failed)} failed.\n{lines}"
                     )
         except Exception as e:
             print(f"[SCHEDULER ERROR] {e}")

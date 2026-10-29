@@ -59,6 +59,11 @@ async def next_post_title() -> str:
     return f"POST NO - {doc['seq']:02d}"
 
 
+async def rollback_post_no():
+    """Give the number back when nothing was posted (called under the publish lock)."""
+    await counters_col.update_one({"_id": "post_no"}, {"$inc": {"seq": -1}})
+
+
 # ── Scheduled Posts ───────────────────────────────────────────────────────────
 
 async def save_scheduled_post(data: dict):
@@ -78,11 +83,12 @@ async def claim_due_post():
     )
 
 
-async def finish_post(post_id, status: str, sent: int, failed: int):
+async def finish_post(post_id, status: str, sent: int, failed: int, title: str | None = None):
     await scheduled_col.update_one(
         {"_id": post_id},
         {"$set": {
             "status": status,
+            **({"title": title} if title else {}),
             "sent_count": sent,
             "failed_count": failed,
             "finished_at": datetime.now(timezone.utc),
@@ -124,12 +130,15 @@ async def get_last_5_logs():
 
 # ── Samples (file store) ──────────────────────────────────────────────────────
 
-async def create_sample(key: str, admin_id: int, db_msg_id: int, ready_msg_id: int):
+async def create_sample(key: str, admin_id: int, db_msg_id: int, ready_msg_id: int,
+                        duration: float, size_bytes: int):
     await samples_col.insert_one({
         "key": key,
         "admin_id": admin_id,
         "db_msg_id": db_msg_id,        # message id inside the DB channel
         "ready_msg_id": ready_msg_id,  # bot message the admin replies to with the link
+        "duration": duration,          # full video duration (seconds)
+        "size_bytes": size_bytes,      # full video size
         "main_link": None,
         "status": "awaiting_link",
         "created_at": datetime.now(timezone.utc),

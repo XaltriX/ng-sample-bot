@@ -63,7 +63,7 @@ def register_handlers(app: Client):
             await cb.answer()
         if data in ("post_now", "schedule_post") and not state.get_key(uid, "main_link"):
             return await cb.message.edit_text(
-                "⚠️ Session expire ho gaya. Video dobara bhejo.", reply_markup=back_btn()
+                "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
             )
 
         # ── Main menu ─────────────────────────────────────────────────────────
@@ -77,8 +77,8 @@ def register_handlers(app: Client):
         elif data == "create_post":
             state.clear(uid)
             await cb.message.edit_text(
-                "🎬 Send the **full video** (video ya file).\n\n"
-                "Sample + preview link auto ban jayega, phir bas Download link dena.",
+                "🎬 Send the **full video** (as a video or a file).\n\n"
+                "The sample and preview link are created automatically. You only add the download link.",
                 reply_markup=cancel_btn(),
             )
 
@@ -219,7 +219,7 @@ def register_handlers(app: Client):
                 return await cb.message.edit_text("❌ Invalid option.")
             if sched_time <= datetime.now(timezone.utc):
                 return await cb.message.edit_text(
-                    "⚠️ Ye time nikal chuka hai. Doosra time chuno.",
+                    "⚠️ That time has already passed. Pick another time.",
                     reply_markup=InlineKeyboardMarkup(
                         [[InlineKeyboardButton("🔙 Back", callback_data="quick_sched")]]
                     ),
@@ -266,14 +266,18 @@ def register_handlers(app: Client):
             state.clear(uid)  # clear first so a double-tap can't schedule twice
             if not sess.get("main_link") or not sess.get("schedule_time"):
                 return await cb.message.edit_text(
-                    "⚠️ Session expire ho gaya. Video dobara bhejo.", reply_markup=back_btn()
+                    "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
                 )
             channels_mode = sess.get("channels_mode", "select")
-            title = await db.next_post_title()
             await db.save_scheduled_post({
-                "title": title,
+                # POST NO is assigned when the post is actually published,
+                # so the numbers always follow the real order in the channel.
+                "title": None,
+                "sample_key": sess.get("sample_key"),
                 "main_link": sess["main_link"],
                 "preview": sess.get("preview"),
+                "duration": sess.get("duration"),
+                "size_bytes": sess.get("size_bytes"),
                 "channels_mode": channels_mode,
                 # "all" mode → resolved LIVE by the scheduler at send time,
                 # so we don't need to freeze the channel list here.
@@ -281,7 +285,7 @@ def register_handlers(app: Client):
                 "schedule_time": sess["schedule_time"],
             })
             state.clear(uid)
-            await cb.message.edit_text(f"✅ **{title}** scheduled!", reply_markup=back_btn())
+            await cb.message.edit_text("✅ Post scheduled! Its POST NO is assigned when it gets published.", reply_markup=back_btn())
 
         elif data == "sched_cancel":
             state.clear(uid)
@@ -341,7 +345,7 @@ def register_handlers(app: Client):
             lines = []
             for p in posts:
                 t = to_ist(p["schedule_time"])
-                lines.append(f"• {t} — {p['title'][:30]}")
+                lines.append(f"• {t} — {label(p)[:30]}")
             await cb.message.edit_text(
                 "📅 **All Scheduled:**\n\n" + "\n".join(lines),
                 reply_markup=back_btn(),
@@ -353,7 +357,7 @@ def register_handlers(app: Client):
                 return await cb.message.edit_text("No pending posts.", reply_markup=back_btn())
             buttons = [
                 [InlineKeyboardButton(
-                    f"❌ {p['title'][:25]} ({p['schedule_time'].astimezone(IST).strftime('%d-%m %H:%M IST')})",
+                    f"❌ {label(p)[:25]} ({p['schedule_time'].astimezone(IST).strftime('%d-%m %H:%M IST')})",
                     callback_data=f"do_cancel_{p['_id']}"
                 )]
                 for p in posts
@@ -379,8 +383,8 @@ def register_handlers(app: Client):
         # Video / file → sample pipeline (unless we're waiting for a channel forward)
         if step != "add_channel" and (msg.video or msg.document):
             if msg.document and not (msg.document.mime_type or "").startswith("video/"):
-                return await msg.reply("⚠️ Sirf video file bhejo.")
-            status = await msg.reply("⏳ Queue me add ho gaya…")
+                return await msg.reply("⚠️ Please send a video file.")
+            status = await msg.reply("⏳ Added to the queue…")
             return await sampler.enqueue(client, msg, status)
 
         if step == "add_channel":
@@ -503,7 +507,7 @@ async def handle_link(msg: Message, uid: int, text: str):
     if not text:
         return
     if not text.lower().startswith(("http://", "https://")):
-        return await msg.reply("❌ Valid download link bhejo (http:// ya https:// se shuru).")
+        return await msg.reply("❌ Send a valid download link (starting with http:// or https://).")
 
     sample = None
     if msg.reply_to_message:
@@ -511,12 +515,15 @@ async def handle_link(msg: Message, uid: int, text: str):
     if not sample:
         sample = await db.get_latest_awaiting(uid)
     if not sample:
-        return await msg.reply("⚠️ Pehle video bhejo, sample ready hone ke baad link bhejna.")
+        return await msg.reply("⚠️ Send a video first, then send the link once the sample is ready.")
 
     await db.set_sample_link(sample["key"], text)
     state.clear(uid)
     state.set_key(uid, "main_link", text)
     state.set_key(uid, "preview", helpers.preview_link(sample["key"]))
+    state.set_key(uid, "sample_key", sample["key"])
+    state.set_key(uid, "duration", sample.get("duration"))
+    state.set_key(uid, "size_bytes", sample.get("size_bytes"))
     await msg.reply(
         "✅ **Post Ready!**",
         reply_markup=InlineKeyboardMarkup([
@@ -532,18 +539,21 @@ async def do_post_now(client, message, uid: int):
     cids = sess.get("pn_selected", [])
     if not sess.get("main_link") or not cids:
         return await message.edit_text(
-            "⚠️ Session expire ho gaya. Video dobara bhejo.", reply_markup=back_btn()
+            "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
         )
-    title = await db.next_post_title()
-    await message.edit_text(f"⏳ **{title}** post ho raha hai…")
-    sent, failed = await helpers.send_post_to_channels(
+    await message.edit_text("⏳ Posting…")
+    title, sent, failed = await helpers.publish(
         app=client,
-        title=title,
         main_link=sess["main_link"],
         preview=sess.get("preview"),
         channel_ids=cids,
+        duration=sess.get("duration"),
+        size_bytes=sess.get("size_bytes"),
     )
-    text = f"✅ **{title}** posted in **{sent}/{len(cids)}** channel(s)."
+    text = (
+        f"✅ **{title}** posted in **{sent}/{len(cids)}** channel(s)."
+        if sent else f"❌ Nothing was posted (0/{len(cids)} channels)."
+    )
     if failed:
         text += "\n\n⚠️ Failed:\n" + "\n".join(f"• `{cid}` — {err[:60]}" for cid, err in failed)
     await message.edit_text(text, reply_markup=back_btn())
@@ -618,7 +628,7 @@ async def show_schedule_confirm(message, uid: int):
     sched_time: datetime = sess.get("schedule_time")
     if not sched_time or not sess.get("main_link"):
         return await message.edit_text(
-            "⚠️ Session expire ho gaya. Video dobara bhejo.", reply_markup=back_btn()
+            "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
         )
     channels = sess.get("selected_channels", [])
     channels_mode = sess.get("channels_mode", "select")
@@ -659,7 +669,7 @@ async def show_dashboard(message):
         lines.append("🗓 **Upcoming (next 3):**")
         for p in upcoming:
             t = to_ist(p["schedule_time"])
-            lines.append(f"  • {t} — {p['title'][:25]}")
+            lines.append(f"  • {t} — {label(p)[:25]}")
         lines.append("")
 
     if last5:
@@ -718,3 +728,8 @@ def resolve_quick_time(data: str) -> datetime | None:
         return target.astimezone(timezone.utc)
 
     return None
+
+
+def label(p: dict) -> str:
+    """Name shown in admin lists (scheduled posts have no POST NO until published)."""
+    return p.get("title") or f"Scheduled post ({p.get('sample_key') or '?'})"

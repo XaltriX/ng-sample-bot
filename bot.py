@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | 
 
 async def main():
     if "PUT_" in FILESTORE_BOT_TOKEN or not DB_CHANNEL_ID:
-        raise SystemExit("config.py me FILESTORE_BOT_TOKEN aur DB_CHANNEL_ID bharo.")
+        raise SystemExit("Fill FILESTORE_BOT_TOKEN and DB_CHANNEL_ID in config.py.")
 
     # in_memory → no .session files to leak / lose on Heroku restarts
     app = Client("main_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
