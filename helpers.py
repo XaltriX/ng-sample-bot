@@ -51,7 +51,7 @@ def build_caption(
     lines = [
         "┏━━━━━ 𝗡𝗘𝗪 𝗣𝗢𝗦𝗧 ━━━━━┓",
         "",
-        f"🎬 <b>{html.escape(title)}</b>",
+        f"🔞 <b>{html.escape(title)}</b>",
         "",
     ]
 
@@ -64,12 +64,12 @@ def build_caption(
         lines += ["   ".join(info), ""]
 
     if preview:
-        link = _a("Preview Link", preview)
-        lines += [f"<blockquote>👀 <b>PREVIEW &amp; WATCH</b>\n➥ {link}\n➥ {link}</blockquote>", ""]
+        link = _a("Sample Video", preview)
+        lines += [f"<blockquote>🍷 <b>WATCH SAMPLE</b>\n🫦 {link}\n🫦 {link}</blockquote>", ""]
 
     link = _a("Full Video", main_link)
     lines += [
-        f"<blockquote>📥 <b>DOWNLOAD VIDEO</b>\n➥ {link}\n➥ {link}</blockquote>",
+        f"<blockquote>🥂 <b>GET FULL VIDEO</b>\n🌶 {link}\n🌶 {link}</blockquote>",
         "",
         "┗━━━━ <b>@Linkz_wallah</b> ━━━━┛",
     ]
