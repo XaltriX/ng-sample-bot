@@ -38,6 +38,7 @@ async def add_channel(channel_id: int, title: str):
 
 
 async def remove_channel(channel_id: int):
+    await groups_col.update_many({}, {"$pull": {"channel_ids": channel_id}})  # also leave its group
     result = await channels_col.delete_one({"channel_id": channel_id})
     return result.deleted_count > 0
 
@@ -48,10 +49,10 @@ async def get_all_channels():
 
 # ── Post numbering ────────────────────────────────────────────────────────────
 
-async def next_post_title() -> str:
+async def next_post_title(counter_id: str = "general") -> str:
     """Atomic counter → 'POST NO - 01', '02', ..."""
     doc = await counters_col.find_one_and_update(
-        {"_id": "post_no"},
+        {"_id": counter_id},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
@@ -59,9 +60,9 @@ async def next_post_title() -> str:
     return f"POST NO - {doc['seq']:02d}"
 
 
-async def rollback_post_no():
+async def rollback_post_no(counter_id: str = "general"):
     """Give the number back when nothing was posted (called under the publish lock)."""
-    await counters_col.update_one({"_id": "post_no"}, {"$inc": {"seq": -1}})
+    await counters_col.update_one({"_id": counter_id}, {"$inc": {"seq": -1}})
 
 
 # ── Scheduled Posts ───────────────────────────────────────────────────────────
@@ -184,3 +185,81 @@ async def get_due_deletions():
 
 async def mark_deletion_done(doc_id):
     await deletions_col.update_one({"_id": doc_id}, {"$set": {"done": True}})
+
+
+# ── Channel groups ────────────────────────────────────────────────────────────
+
+groups_col = db["groups"]
+settings_col = db["settings"]
+
+
+def _oid(gid):
+    try:
+        return ObjectId(str(gid))
+    except Exception:
+        return None
+
+
+async def create_group(name: str, channel_ids: list, start_no: int = 1):
+    res = await groups_col.insert_one({
+        "name": name,
+        "channel_ids": list(channel_ids),
+        "created_at": datetime.now(timezone.utc),
+    })
+    # counter holds the LAST used number → next post gets start_no
+    await counters_col.update_one({"_id": f"group:{res.inserted_id}"}, {"$set": {"seq": start_no - 1}}, upsert=True)
+    return res.inserted_id
+
+
+async def get_groups():
+    return await groups_col.find({}).sort("created_at", 1).to_list(length=None)
+
+
+async def get_group(gid):
+    oid = _oid(gid)
+    return await groups_col.find_one({"_id": oid}) if oid else None
+
+
+async def set_group_channels(gid, channel_ids: list):
+    await groups_col.update_one({"_id": _oid(gid)}, {"$set": {"channel_ids": list(channel_ids)}})
+
+
+async def rename_group(gid, name: str):
+    await groups_col.update_one({"_id": _oid(gid)}, {"$set": {"name": name}})
+
+
+async def delete_group(gid):
+    oid = _oid(gid)
+    if oid:
+        await groups_col.delete_one({"_id": oid})
+        await counters_col.delete_one({"_id": f"group:{oid}"})
+
+
+async def get_grouped_channel_ids(exclude_gid=None) -> set:
+    """Channel ids that already belong to a group (optionally ignoring one group)."""
+    taken = set()
+    for g in await groups_col.find({}).to_list(length=None):
+        if exclude_gid is not None and str(g["_id"]) == str(exclude_gid):
+            continue
+        taken.update(g.get("channel_ids", []))
+    return taken
+
+
+async def get_counter(counter_id: str) -> int:
+    doc = await counters_col.find_one({"_id": counter_id})
+    return int(doc["seq"]) if doc else 0
+
+
+async def set_counter(counter_id: str, seq: int):
+    await counters_col.update_one({"_id": counter_id}, {"$set": {"seq": seq}}, upsert=True)
+
+
+# ── "Same as last time" ───────────────────────────────────────────────────────
+
+async def set_last_target(admin_id: int, target: dict):
+    await settings_col.update_one({"_id": f"last_target:{admin_id}"}, {"$set": {"target": target}}, upsert=True)
+
+
+async def get_last_target(admin_id: int):
+    doc = await settings_col.find_one({"_id": f"last_target:{admin_id}"})
+    return doc["target"] if doc else None

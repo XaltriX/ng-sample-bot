@@ -28,33 +28,36 @@ async def scheduler_loop(app: Client):
                 if not post:
                     break
 
-                title = post.get("title") or "scheduled post"
                 try:
-                    # "all" mode → resolve channels LIVE at send time
-                    if post.get("channels_mode") == "all":
-                        channel_ids = [c["channel_id"] for c in await db.get_all_channels()]
+                    if post.get("target"):
+                        results = await helpers.publish_targets(
+                            app, post["target"], post["main_link"], post.get("preview"),
+                            post.get("duration"), post.get("size_bytes"),
+                        )
                     else:
-                        channel_ids = post.get("channels", [])
-
-                    title, sent, failed = await helpers.publish(
-                        app=app,
-                        main_link=post["main_link"],
-                        preview=post.get("preview"),
-                        duration=post.get("duration"),
-                        size_bytes=post.get("size_bytes"),
-                        channel_ids=channel_ids,
-                    )
+                        # posts scheduled by an older version (plain channel list / "all" mode)
+                        if post.get("channels_mode") == "all":
+                            ids = [c["channel_id"] for c in await db.get_all_channels()]
+                        else:
+                            ids = post.get("channels", [])
+                        title, sent, failed = await helpers.publish(
+                            app, post["main_link"], post.get("preview"), ids,
+                            post.get("duration"), post.get("size_bytes"),
+                        )
+                        results = [{"label": "Channels", "title": title, "sent": sent,
+                                    "failed": failed, "total": len(ids)}]
                 except Exception as e:
-                    sent, failed = 0, [(0, str(e))]
+                    results = [{"label": "Error", "title": "-", "sent": 0,
+                                "failed": [("-", str(e))], "total": 0}]
 
-                await db.finish_post(post["_id"], "sent" if sent else "failed", sent, len(failed), title if sent else None)
-                print(f"[SCHEDULER] {title}: sent={sent} failed={len(failed)}")
+                sent = sum(r["sent"] for r in results)
+                nfail = sum(len(r["failed"]) for r in results)
+                titles = ", ".join(r["title"] for r in results if r["sent"])
+                await db.finish_post(post["_id"], "sent" if sent else "failed", sent, nfail, titles or None)
+                print(f"[SCHEDULER] {titles or 'nothing posted'}: sent={sent} failed={nfail}")
 
-                if failed or not sent:
-                    lines = "\n".join(f"• {cid} — {err[:80]}" for cid, err in failed) or "• no channels found"
-                    await _notify_admins(
-                        app, f"⚠️ Scheduled **{title}**: {sent} sent, {len(failed)} failed.\n{lines}"
-                    )
+                if nfail or not sent:
+                    await _notify_admins(app, "⚠️ Scheduled post had problems:\n" + helpers.format_results(results))
         except Exception as e:
             print(f"[SCHEDULER ERROR] {e}")
         await asyncio.sleep(20)

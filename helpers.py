@@ -129,6 +129,7 @@ async def publish(
     channel_ids: list[int],
     duration: float | None = None,
     size_bytes: int | None = None,
+    counter_id: str = "general",
 ) -> tuple[str, int, list[tuple[int, str]]]:
     """
     Assigns the next POST NO and sends the post, under one lock.
@@ -138,14 +139,71 @@ async def publish(
     Returns (title, success_count, failed).
     """
     async with _publish_lock:
-        title = await db.next_post_title()
+        title = await db.next_post_title(counter_id)
         try:
             sent, failed = await send_post_to_channels(
                 app, title, main_link, preview, channel_ids, duration, size_bytes
             )
         except Exception:
-            await db.rollback_post_no()
+            await db.rollback_post_no(counter_id)
             raise
         if not sent:
-            await db.rollback_post_no()
+            await db.rollback_post_no(counter_id)
         return title, sent, failed
+
+
+async def publish_targets(
+    app: Client,
+    target: dict,
+    main_link: str,
+    preview: str | None,
+    duration: float | None = None,
+    size_bytes: int | None = None,
+) -> list[dict]:
+    """
+    Posts to every selected group (each group = its own message with its own POST NO)
+    and to manually picked channels (general counter). Groups are resolved NOW,
+    so channels added to a group after scheduling are included.
+    Returns [{"label", "title", "sent", "failed", "total"}, ...].
+    """
+    results: list[dict] = []
+    all_groups = await db.get_groups()
+    if target.get("all_groups"):
+        selected = all_groups
+    else:
+        wanted = set(target.get("groups", []))
+        selected = [g for g in all_groups if str(g["_id"]) in wanted]
+        if len(selected) < len(wanted):
+            results.append({"label": "Deleted group", "title": "-", "sent": 0,
+                            "failed": [("-", "group no longer exists")], "total": 0})
+
+    for g in selected:
+        ids = g.get("channel_ids", [])
+        if not ids:
+            results.append({"label": g["name"], "title": "-", "sent": 0,
+                            "failed": [("-", "group has no channels")], "total": 0})
+            continue
+        title, sent, failed = await publish(
+            app, main_link, preview, ids, duration, size_bytes, counter_id=f"group:{g['_id']}"
+        )
+        results.append({"label": g["name"], "title": title, "sent": sent, "failed": failed, "total": len(ids)})
+
+    manual = target.get("channels") or []
+    if manual:
+        title, sent, failed = await publish(app, main_link, preview, manual, duration, size_bytes)
+        results.append({"label": "Manual", "title": title, "sent": sent, "failed": failed, "total": len(manual)})
+    return results
+
+
+def format_results(results: list[dict]) -> str:
+    if not results:
+        return "❌ Nothing to post: no channels found."
+    lines = []
+    for r in results:
+        if r["sent"]:
+            lines.append(f"✅ **{r['title']}** → {r['label']}: {r['sent']}/{r['total']}")
+        else:
+            lines.append(f"❌ {r['label']}: nothing posted")
+        for cid, err in r["failed"]:
+            lines.append(f"   ⚠️ `{cid}` — {err[:60]}")
+    return "\n".join(lines)

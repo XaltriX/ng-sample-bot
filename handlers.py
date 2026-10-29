@@ -19,6 +19,7 @@ import database as db
 import helpers
 import state
 import sampler
+import targets
 from config import ADMIN_IDS
 
 # ── Admin guard ───────────────────────────────────────────────────────────────
@@ -58,9 +59,11 @@ def register_handlers(app: Client):
         if not is_admin(uid):
             return await cb.answer("⛔ Unauthorized.", show_alert=True)
         data = cb.data
-        # confirm-select buttons answer themselves (they may need an alert)
-        if data not in ("pn_confirm_select", "ch_confirm_select"):
+        # group / target buttons answer the callback themselves (they may need an alert)
+        if not data.startswith(("tg_", "gr_", "grp_")):
             await cb.answer()
+        if data.startswith(("tg_", "gr_")) or data == "grp_menu":
+            return await targets.on_callback(client, cb, uid, data, after_target)
         if data in ("post_now", "schedule_post") and not state.get_key(uid, "main_link"):
             return await cb.message.edit_text(
                 "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
@@ -88,48 +91,7 @@ def register_handlers(app: Client):
 
         # ── Post Now / Schedule ───────────────────────────────────────────────
         elif data == "post_now":
-            channels = await db.get_all_channels()
-            if not channels:
-                return await cb.message.edit_text(
-                    "❌ No channels added yet.\n\nAdd channels first.",
-                    reply_markup=back_btn(),
-                )
-            state.set_key(uid, "post_mode", "now")
-            await cb.message.edit_text(
-                "📢 **Choose channels to post:**",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ All Channels", callback_data="pn_ch_all")],
-                    [InlineKeyboardButton("🎯 Select Channels", callback_data="pn_ch_select")],
-                ]),
-            )
-
-        elif data == "pn_ch_all":
-            channels = await db.get_all_channels()
-            cids = [c["channel_id"] for c in channels]
-            state.set_key(uid, "pn_selected", cids)
-            await do_post_now(client, cb.message, uid)
-
-        elif data == "pn_ch_select":
-            channels = await db.get_all_channels()
-            state.set_key(uid, "pn_toggle", {c["channel_id"]: False for c in channels})
-            state.set_key(uid, "pn_channel_list", channels)
-            await show_pn_toggle_list(cb.message, uid)
-
-        elif data.startswith("pn_toggle_"):
-            cid = int(data.split("_", 2)[2])
-            toggles = state.get_key(uid, "pn_toggle", {})
-            toggles[cid] = not toggles.get(cid, False)
-            state.set_key(uid, "pn_toggle", toggles)
-            await show_pn_toggle_list(cb.message, uid)
-
-        elif data == "pn_confirm_select":
-            toggles = state.get_key(uid, "pn_toggle", {})
-            selected = [cid for cid, chosen in toggles.items() if chosen]
-            if not selected:
-                return await cb.answer("⚠️ Select at least one channel.", show_alert=True)
-            await cb.answer()
-            state.set_key(uid, "pn_selected", selected)
-            await do_post_now(client, cb.message, uid)
+            await targets.show_target_menu(cb.message, uid, mode="now")
 
         elif data == "schedule_post":
             state.set_key(uid, "step", "sched_type")
@@ -228,64 +190,30 @@ def register_handlers(app: Client):
             await show_channel_selection(cb.message, uid)
 
         # ── Channel selection ─────────────────────────────────────────────────
-        elif data == "ch_all":
-            channels = await db.get_all_channels()
-            cids = [c["channel_id"] for c in channels]
-            state.set_key(uid, "selected_channels", cids)
-            state.set_key(uid, "channels_mode", "all")
-            await show_schedule_confirm(cb.message, uid)
-
-        elif data == "ch_select":
-            channels = await db.get_all_channels()
-            if not channels:
-                return await cb.message.edit_text("❌ No channels found.", reply_markup=back_btn())
-            state.set_key(uid, "toggle_channels", {c["channel_id"]: False for c in channels})
-            state.set_key(uid, "channel_list", channels)
-            await show_toggle_list(cb.message, uid)
-
-        elif data.startswith("toggle_"):
-            cid = int(data.split("_", 1)[1])
-            toggles = state.get_key(uid, "toggle_channels", {})
-            toggles[cid] = not toggles.get(cid, False)
-            state.set_key(uid, "toggle_channels", toggles)
-            await show_toggle_list(cb.message, uid)
-
-        elif data == "ch_confirm_select":
-            toggles = state.get_key(uid, "toggle_channels", {})
-            selected = [cid for cid, chosen in toggles.items() if chosen]
-            if not selected:
-                return await cb.answer("⚠️ Select at least one channel.", show_alert=True)
-            await cb.answer()
-            state.set_key(uid, "selected_channels", selected)
-            state.set_key(uid, "channels_mode", "select")
-            await show_schedule_confirm(cb.message, uid)
-
         # ── Schedule confirm/cancel ───────────────────────────────────────────
         elif data == "sched_confirm":
             sess = dict(state.get(uid))
             state.clear(uid)  # clear first so a double-tap can't schedule twice
-            if not sess.get("main_link") or not sess.get("schedule_time"):
+            if not sess.get("main_link") or not sess.get("schedule_time") or not sess.get("target"):
                 return await cb.message.edit_text(
                     "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
                 )
-            channels_mode = sess.get("channels_mode", "select")
             await db.save_scheduled_post({
                 # POST NO is assigned when the post is actually published,
-                # so the numbers always follow the real order in the channel.
+                # so the numbers always follow the real order in each channel.
                 "title": None,
                 "sample_key": sess.get("sample_key"),
                 "main_link": sess["main_link"],
                 "preview": sess.get("preview"),
                 "duration": sess.get("duration"),
                 "size_bytes": sess.get("size_bytes"),
-                "channels_mode": channels_mode,
-                # "all" mode → resolved LIVE by the scheduler at send time,
-                # so we don't need to freeze the channel list here.
-                "channels": sess["selected_channels"] if channels_mode == "select" else [],
+                "target": sess["target"],
                 "schedule_time": sess["schedule_time"],
             })
-            state.clear(uid)
-            await cb.message.edit_text("✅ Post scheduled! Its POST NO is assigned when it gets published.", reply_markup=back_btn())
+            await cb.message.edit_text(
+                "✅ Post scheduled! Its POST NO is assigned when it gets published.",
+                reply_markup=back_btn(),
+            )
 
         elif data == "sched_cancel":
             state.clear(uid)
@@ -299,6 +227,7 @@ def register_handlers(app: Client):
                     [InlineKeyboardButton("➕ Add Channel", callback_data="add_channel")],
                     [InlineKeyboardButton("➖ Remove Channel", callback_data="remove_channel")],
                     [InlineKeyboardButton("📋 List Channels", callback_data="list_channels")],
+                    [InlineKeyboardButton("🗂 Groups", callback_data="grp_menu")],
                     [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
                 ]),
             )
@@ -441,6 +370,9 @@ def register_handlers(app: Client):
             except ValueError:
                 await msg.reply("❌ Wrong format. Use `DD-MM HH:MM` e.g. `25-07 21:00`")
 
+        elif step in targets.GROUP_STEPS:
+            await targets.handle_text(msg, uid, step)
+
         else:
             # Any other text = download link for a sample
             await handle_link(msg, uid, msg.text.strip() if msg.text else "")
@@ -533,119 +465,52 @@ async def handle_link(msg: Message, uid: int, text: str):
     )
 
 
+async def after_target(client, message, uid: int):
+    """Called by targets.py once the admin has chosen where to post."""
+    if state.get_key(uid, "target_mode") == "now":
+        await do_post_now(client, message, uid)
+    else:
+        await show_schedule_confirm(message, uid)
+
+
 async def do_post_now(client, message, uid: int):
     sess = dict(state.get(uid))
     state.clear(uid)  # clear first so a double-tap can't post twice
-    cids = sess.get("pn_selected", [])
-    if not sess.get("main_link") or not cids:
+    target = sess.get("target")
+    if not sess.get("main_link") or not target:
         return await message.edit_text(
             "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
         )
     await message.edit_text("⏳ Posting…")
-    title, sent, failed = await helpers.publish(
-        app=client,
-        main_link=sess["main_link"],
-        preview=sess.get("preview"),
-        channel_ids=cids,
-        duration=sess.get("duration"),
-        size_bytes=sess.get("size_bytes"),
+    results = await helpers.publish_targets(
+        client, target, sess["main_link"], sess.get("preview"),
+        sess.get("duration"), sess.get("size_bytes"),
     )
-    text = (
-        f"✅ **{title}** posted in **{sent}/{len(cids)}** channel(s)."
-        if sent else f"❌ Nothing was posted (0/{len(cids)} channels)."
-    )
-    if failed:
-        text += "\n\n⚠️ Failed:\n" + "\n".join(f"• `{cid}` — {err[:60]}" for cid, err in failed)
-    await message.edit_text(text, reply_markup=back_btn())
-
-
-async def show_pn_toggle_list(message, uid: int):
-    toggles: dict = state.get_key(uid, "pn_toggle", {})
-    channel_list: list = state.get_key(uid, "pn_channel_list", [])
-    buttons = []
-    for c in channel_list:
-        cid = c["channel_id"]
-        mark = "☑" if toggles.get(cid) else "☐"
-        buttons.append([InlineKeyboardButton(
-            f"{mark} {c['title']}",
-            callback_data=f"pn_toggle_{cid}"
-        )])
-    buttons.append([InlineKeyboardButton("✅ Confirm & Post", callback_data="pn_confirm_select")])
-    try:
-        await message.edit_text("Select channels to post:", reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception:
-        pass
+    await message.edit_text(helpers.format_results(results), reply_markup=back_btn())
 
 
 async def show_channel_selection(message, uid: int):
-    channels = await db.get_all_channels()
-    if not channels:
-        await message.edit_text("❌ No channels found.", reply_markup=back_btn())
-        return
-    await message.edit_text(
-        "📢 Choose channels:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ All Channels", callback_data="ch_all")],
-            [InlineKeyboardButton("🎯 Select Channels", callback_data="ch_select")],
-        ]),
-    )
+    await targets.show_target_menu(message, uid, mode="sched")
 
 
 async def show_channel_selection_msg(message: Message, uid: int):
-    channels = await db.get_all_channels()
-    if not channels:
-        await message.reply("❌ No channels found.", reply_markup=back_btn())
-        return
-    await message.reply(
-        "📢 Choose channels:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ All Channels", callback_data="ch_all")],
-            [InlineKeyboardButton("🎯 Select Channels", callback_data="ch_select")],
-        ]),
-    )
-
-
-async def show_toggle_list(message, uid: int):
-    toggles: dict = state.get_key(uid, "toggle_channels", {})
-    channel_list: list = state.get_key(uid, "channel_list", [])
-    buttons = []
-    for c in channel_list:
-        cid = c["channel_id"]
-        mark = "☑" if toggles.get(cid) else "☐"
-        buttons.append([InlineKeyboardButton(
-            f"{mark} {c['title']}",
-            callback_data=f"toggle_{cid}"
-        )])
-    buttons.append([InlineKeyboardButton("✅ Confirm Selection", callback_data="ch_confirm_select")])
-    try:
-        await message.edit_text("Select channels:", reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception:
-        pass
+    await targets.show_target_menu(message, uid, mode="sched", reply=True)
 
 
 async def show_schedule_confirm(message, uid: int):
     sess = state.get(uid)
     sched_time: datetime = sess.get("schedule_time")
-    if not sched_time or not sess.get("main_link"):
+    target = sess.get("target")
+    if not sched_time or not sess.get("main_link") or not target:
         return await message.edit_text(
             "⚠️ Session expired. Please send the video again.", reply_markup=back_btn()
         )
-    channels = sess.get("selected_channels", [])
-    channels_mode = sess.get("channels_mode", "select")
-
-    ist_offset = timedelta(hours=5, minutes=30)
-    ist_time = sched_time.astimezone(timezone(ist_offset))
-    time_str = ist_time.strftime("%d-%m-%Y %H:%M IST")
-
-    if channels_mode == "all":
-        channels_line = f"📢 Channels: **All ({len(channels)})** — new channels auto-included"
-    else:
-        channels_line = f"📢 Channels: {len(channels)}"
-
+    desc = targets.describe(target, await db.get_groups())
     await message.edit_text(
         f"📋 **Confirm Schedule**\n\n"
-        f"🕒 Time: `{time_str}`\n"
-        f"{channels_line}",
+        f"🕒 Time: `{to_ist(sched_time)}`\n"
+        f"📢 Post to: {desc}\n\n"
+        f"Groups are resolved when the post goes out.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm", callback_data="sched_confirm"),
              InlineKeyboardButton("❌ Cancel", callback_data="sched_cancel")],
