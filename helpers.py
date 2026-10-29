@@ -65,11 +65,11 @@ def build_caption(
 
     if preview:
         link = _a("Preview Link", preview)
-        lines += [f"<blockquote>👀 <b>PREVIEW</b>\n➥ {link}\n➥ {link}</blockquote>", ""]
+        lines += [f"<blockquote>👀 <b>PREVIEW &amp; WATCH</b>\n➥ {link}\n➥ {link}</blockquote>", ""]
 
     link = _a("Full Video", main_link)
     lines += [
-        f"<blockquote>📥 <b>DOWNLOAD &amp; WATCH</b>\n➥ {link}\n➥ {link}</blockquote>",
+        f"<blockquote>📥 <b>DOWNLOAD VIDEO</b>\n➥ {link}\n➥ {link}</blockquote>",
         "",
         "┗━━━━ <b>@Linkz_wallah</b> ━━━━┛",
     ]
