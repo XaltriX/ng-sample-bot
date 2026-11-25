@@ -6,7 +6,7 @@ import os
 # ── Telegram API credentials ──────────────────────────────────────────────────
 API_ID: int = int(os.getenv("API_ID", "24955235"))
 API_HASH: str = os.getenv("API_HASH", "f317b3f7bbe390346d8b46868cff0de8")
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "7205909672:AAF8quuEsZ35aIzf_DOCPqMZ9RCUwJyPZl8")
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "7907090935:AAH0bGIkTcuIXqx2hQpYS08Ib1hUBvtM0k0")
 
 # ── Admin access ──────────────────────────────────────────────────────────────
 _raw = os.getenv("ADMIN_IDS", "9290575752")
